@@ -9,6 +9,7 @@
 *.pth
 venv/*
 venv
+__pycache__/
 *.pt
 *.ckpt
 *.json
