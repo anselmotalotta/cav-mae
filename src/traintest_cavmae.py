@@ -10,6 +10,7 @@
 import sys
 import os
 import datetime
+from tqdm import tqdm
 sys.path.append(os.path.dirname(os.path.dirname(sys.path[0])))
 from utilities import *
 import time
@@ -77,8 +78,8 @@ def train(audio_model, train_loader, test_loader, args):
         print(datetime.datetime.now())
         print("current #epochs=%s, #steps=%s" % (epoch, global_step))
         print('current masking ratio is {:.3f} for both modalities; audio mask mode {:s}'.format(args.masking_ratio, args.mask_mode))
-
-        for i, (a_input, v_input, _) in enumerate(train_loader):
+        
+        for i, (a_input, v_input, _) in enumerate(tqdm(train_loader, desc="Training Progress")):
 
             B = a_input.size(0)
             a_input = a_input.to(device, non_blocking=True)
