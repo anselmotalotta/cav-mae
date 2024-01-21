@@ -218,7 +218,7 @@ class AudiosetDataset(Dataset):
             frame_idx = random.randint(0, 9)
 
         while os.path.exists(video_path + '/frame_' + str(frame_idx) + '/' + video_id + '.jpg') == False and frame_idx >= 1:
-            print('frame {:s} {:d} does not exist'.format(video_id, frame_idx))
+            # print('frame {:s} {:d} does not exist'.format(video_id, frame_idx))
             frame_idx -= 1
         out_path = video_path + '/frame_' + str(frame_idx) + '/' + video_id + '.jpg'
         #print(out_path)
@@ -235,14 +235,14 @@ class AudiosetDataset(Dataset):
             mix_lambda = np.random.beta(10, 10)
             try:
                 fbank = self._wav2fbank(datum['wav'], mix_datum['wav'], mix_lambda)
-            except:
+            except Exception as e:
                 fbank = torch.zeros([self.target_length, 128]) + 0.01
-                print('there is an error in loading audio')
+                # print('there is an error in loading audio', e)
             try:
                 image = self.get_image(self.randselect_img(datum['video_id'], datum['video_path']), self.randselect_img(mix_datum['video_id'], datum['video_path']), mix_lambda)
-            except:
+            except Exception as e:
                 image = torch.zeros([3, self.im_res, self.im_res]) + 0.01
-                print('there is an error in loading image')
+                # print('there is an error in loading image', e)
             label_indices = np.zeros(self.label_num) + (self.label_smooth / self.label_num)
             for label_str in datum['labels'].split(','):
                 label_indices[int(self.index_dict[label_str])] += mix_lambda * (1.0 - self.label_smooth)
@@ -257,14 +257,14 @@ class AudiosetDataset(Dataset):
             label_indices = np.zeros(self.label_num) + (self.label_smooth / self.label_num)
             try:
                 fbank = self._wav2fbank(datum['wav'], None, 0)
-            except:
+            except Exception as e:
                 fbank = torch.zeros([self.target_length, 128]) + 0.01
-                print('there is an error in loading audio')
+                # print('there is an error in loading audio', e)
             try:
                 image = self.get_image(self.randselect_img(datum['video_id'], datum['video_path']), None, 0)
-            except:
+            except Exception as e:
                 image = torch.zeros([3, self.im_res, self.im_res]) + 0.01
-                print('there is an error in loading image')
+                # print('there is an error in loading image', e)
             for label_str in datum['labels'].split(','):
                 label_indices[int(self.index_dict[label_str])] = 1.0 - self.label_smooth
             label_indices = torch.FloatTensor(label_indices)
