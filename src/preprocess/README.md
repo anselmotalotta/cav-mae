@@ -8,6 +8,14 @@ Otherwise, if you want to use our pipeline (including any of pretraining, classi
 
 Suppose you have a set of videos (e.g., in `.mp4` format), you will need to first extract the audio track and image frames offline and save them on the disk, doing it on-the-fly usually dramatically increases the data loading overhead. In `src/preprocess/extract_{audio,video_frame}.py`, we include our code to do the extraction. Both scripts are simple, you will need to prepare a `csv` file containing a list of video paths (see `src/preprocess/sample_video_extract_list.csv` for an example) and `target_fold` (a single path) of your desired place to save the output. 
 
+To create the csv file givena folder of videos, you can use create_video_list_csv.py:
+
+```python
+cd cav-mae/src/preprocess
+
+python create_video_list_csv.py --folder {path_to_video_folder} --output {path_to_output_csv_file}
+```
+
 By default, we assume the `video_id` is the name of the video without extension and path, e.g., the `video_id` of `/path/test12345.mp4` is `test12345`. the output image frames will be saved at `target_fold/frame_{0-9}/video_id.jpg`, the output audio track will be saved at `target_fold/video_id.wav`.
 
 The audio and image `target_fold` is better to be different, please record the `target_fold` for the next step. 

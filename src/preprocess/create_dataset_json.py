@@ -73,5 +73,7 @@ def main():
 #esample: 
 # python create_dataset_json.py --label_csv_file /storage/data/cavmae/audioset/balanced_train_segment_labels.csv --video_folder /storage/data/cavmae/audioset/preprocesses/balanced_train_segments/video_frames --audio_folder /storage/data/cavmae/audioset/preprocesses/balanced_train_segments/sample_audio --output /storage/data/cavmae/audioset/audioset_20k_custom.json
 
+# python create_dataset_json.py --label_csv_file /storage/data/cavmae/audioset/eval_segment_labels.csv --video_folder /storage/data/cavmae/audioset/preprocesses/eval_segments_partial/video_frames --audio_folder /storage/data/cavmae/audioset/preprocesses/eval_segments_partial/sample_audio --output /storage/data/cavmae/audioset/audioset_eval_partial_custom.json
+
 if __name__ == "__main__":
     main()

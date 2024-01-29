@@ -34,3 +34,16 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+"""
+
+cd cav-mae/src/preprocess
+
+python create_video_list_csv.py --folder /storage/data/cavmae/audioset/videos/eval_segments_partial --output /storage/data/cavmae/eval_segments_partial_list.csv
+
+# extract video frames
+python extract_video_frame.py -input_file_list /storage/data/cavmae/audioset/eval_segments_partial_list.csv -target_fold /storage/data/cavmae/audioset/preprocesses/eval_segments_partial/video_frames
+# extract audio tracks
+python extract_audio.py  -input_file_list /storage/data/cavmae/audioset/eval_segments_partial_list.csv -target_fold /storage/data/cavmae/audioset/preprocesses/eval_segments_partial/sample_audio
+
+"""
