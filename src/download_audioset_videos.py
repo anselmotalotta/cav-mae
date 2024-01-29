@@ -107,9 +107,6 @@ def download_videos(args):
 
             trim_and_convert_video(download_path, yid, start, end)
 
-# launch with nohup /home/anselmo/miniconda3/envs/cavmae/bin/python /home/anselmo/workspace/cav-mae/src/download_audioset_videos.py --input_csv  /storage/data/cavmae/audioset/balanced_train_segments.csv --download_path /storage/data/cavmae/audioset/videos/balanced_train_segments --proxy ""
-
-
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument("--input_csv", type=str)
