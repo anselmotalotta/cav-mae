@@ -8,3 +8,5 @@ scikit-learn
 opencv-python
 tqdm
 pytrie
+wandb
+torchmetrics

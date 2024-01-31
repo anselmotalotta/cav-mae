@@ -5,6 +5,7 @@ import torch
 import torch.nn as nn
 import random
 from collections import namedtuple
+import torchmetrics
 
 def calc_recalls(S):
     """

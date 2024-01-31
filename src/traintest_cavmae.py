@@ -12,13 +12,228 @@ import os
 import datetime
 from tqdm import tqdm
 sys.path.append(os.path.dirname(os.path.dirname(sys.path[0])))
-from utilities import *
+from utilities import AverageMeter
 import time
 import torch
 from torch import nn
 import numpy as np
 import pickle
 from torch.cuda.amp import autocast,GradScaler
+import wandb
+
+
+def initialize_model(audio_model, device, args):
+    """
+    Initializes the model for training, setting it to the appropriate device and wrapping with DataParallel if necessary.
+    Also sets up the optimizer and learning rate scheduler.
+    """
+
+    weight_decay = 5e-7
+    betas = (0.95, 0.999)
+
+    if not isinstance(audio_model, nn.DataParallel):
+        audio_model = nn.DataParallel(audio_model)
+
+    audio_model = audio_model.to(device)
+    trainable_parameters = [p for p in audio_model.parameters() if p.requires_grad]
+    total_params = sum(p.numel() for p in audio_model.parameters())
+    trainable_params = sum(p.numel() for p in trainable_parameters)
+
+    print(f'Total parameter number is: {total_params / 1e6:.3f} million')
+    print(f'Total trainable parameter number is: {trainable_params / 1e6:.3f} million')
+
+    optimizer = torch.optim.Adam(trainable_parameters, args.lr, weight_decay=weight_decay, betas=betas)
+
+    if args.lr_adapt:
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=args.lr_patience, verbose=True)
+        print('Using adaptive learning rate scheduler.')
+    else:
+        milestones = range(args.lrscheduler_start, 1000, args.lrscheduler_step)
+        scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones, gamma=args.lrscheduler_decay)
+        print(f'The learning rate scheduler starts at {args.lrscheduler_start} epoch with decay rate of {args.lrscheduler_decay} every {args.lrscheduler_step} epochs')
+
+    return audio_model, optimizer, scheduler
+
+
+def create_metrics_loggers():
+    """
+    Create a dictionary of AverageMeter instances for tracking training metrics.
+    """
+    metrics_loggers = {
+        'batch_time': AverageMeter(),
+        'per_sample_time': AverageMeter(),
+        'data_time': AverageMeter(),
+        'loss_av_meter': AverageMeter(),
+        'loss_a_meter': AverageMeter(),
+        'loss_v_meter': AverageMeter(),
+        'loss_c_meter': AverageMeter()
+    }
+    return metrics_loggers
+
+def reset_metric_loggers(metrics_loggers):
+    """
+    Reset the values in the AverageMeter instances in the metrics_loggers dictionary.
+    """
+    for meter in metrics_loggers.values():
+        meter.reset()
+
+
+def update_training_metrics(metrics_loggers, loss, loss_mae_a, loss_mae_v, loss_c, batch_size, dnn_start_time):
+    """
+    Update training metrics in the metrics_loggers dictionary.
+    """
+    metrics_loggers['loss_av_meter'].update(loss.item(), batch_size)
+    metrics_loggers['loss_a_meter'].update(loss_mae_a.item(), batch_size)
+    metrics_loggers['loss_v_meter'].update(loss_mae_v.item(), batch_size)
+    metrics_loggers['loss_c_meter'].update(loss_c.item(), batch_size)
+    metrics_loggers['per_sample_time'].update((time.time() - dnn_start_time) / batch_size)
+
+
+def log_training_step(metrics_loggers, args, epoch, step, total_steps, c_acc):
+    """
+    Log information about the training step.
+    """
+
+    metrics = {
+        "train/epoch": epoch,
+        "train/loss_av": metrics_loggers["loss_av_meter"].val,
+        "train/loss_mae_a": metrics_loggers["loss_a_meter"].val,
+        "train/loss_mae_v": metrics_loggers["loss_v_meter"].val,
+        "train/loss_c": metrics_loggers["loss_c_meter"].val,
+        "train/c_acc": c_acc,
+        "train/per_sample_time": metrics_loggers["per_sample_time"].avg
+    }
+
+    wandb.log(metrics)
+
+    print_step = step % args.n_print_steps == 0
+    early_print_step = epoch == 0 and step % (args.n_print_steps / 10) == 0
+    final_step = step == (total_steps - 1)
+    if print_step or early_print_step or final_step:
+        print(f'Epoch: [{epoch}][{step}/{total_steps}]\t'
+              f'Per Sample Total Time {metrics_loggers["per_sample_time"].avg:.5f}\t'
+              f'Train Total Loss {metrics_loggers["loss_av_meter"].val:.4f}\t'
+              f'Train MAE Loss Audio {metrics_loggers["loss_a_meter"].val:.4f}\t'
+              f'Train MAE Loss Visual {metrics_loggers["loss_v_meter"].val:.4f}\t'
+              f'Train Contrastive Loss {metrics_loggers["loss_c_meter"].val:.4f}\t'
+              f'Train Contrastive Acc {c_acc:.3f}', flush=True)
+
+
+def check_divergence(loss_av_meter):
+    """
+    Check if training has diverged (if the average loss is NaN).
+    """
+    return np.isnan(loss_av_meter.avg)
+
+
+def train_epoch(epoch, audio_model, train_loader, optimizer, scaler, device, args, metrics_loggers):
+    """
+    Trains the model for one epoch.
+    """
+    for step, (a_input, v_input, _) in enumerate(tqdm(train_loader, desc="Training Progress")):
+        step_start_time = time.time()
+        batch_size = a_input.size(0)
+        a_input = a_input.to(device, non_blocking=True)
+        v_input = v_input.to(device, non_blocking=True)
+
+        # Data loading time
+        metrics_loggers['data_time'].update(time.time() - step_start_time)
+        metrics_loggers['per_sample_time'].update((time.time() - step_start_time) / batch_size)
+
+        # Forward pass and loss computation
+        with autocast():
+            loss, loss_mae, loss_mae_a, loss_mae_v, loss_c, mask_a, mask_v, c_acc = audio_model(
+                a_input, v_input, args.masking_ratio, args.masking_ratio,
+                mae_loss_weight=args.mae_loss_weight,
+                contrast_loss_weight=args.contrast_loss_weight,
+                mask_mode=args.mask_mode
+            )
+            # Manually averaging loss for DataParallel
+            loss, loss_mae, loss_mae_a, loss_mae_v, loss_c, c_acc = (
+                loss.sum(), loss_mae.sum(), loss_mae_a.sum(), loss_mae_v.sum(), loss_c.sum(), c_acc.mean()
+            )
+
+        # Backward pass and optimization
+        optimizer.zero_grad()
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
+
+        # Update metrics
+        update_training_metrics(metrics_loggers, loss, loss_mae_a, loss_mae_v, loss_c, batch_size, step_start_time)
+
+        # Logging step
+        log_training_step(metrics_loggers, args, epoch, step, len(train_loader), c_acc)
+
+        if check_divergence(metrics_loggers['loss_av_meter']):
+            print("Training diverged...")
+            return False
+
+    return True
+
+
+def validate(device, audio_model, val_loader, metrics_loggers, args):
+    audio_model.eval()
+
+    end = time.time()
+    A_loss, A_loss_mae, A_loss_mae_a, A_loss_mae_v, A_loss_c, A_c_acc = [], [], [], [], [], []
+    with torch.no_grad():
+        for i, (a_input, v_input, _) in enumerate(tqdm(val_loader)):
+            a_input = a_input.to(device)
+            v_input = v_input.to(device)
+            with autocast():
+                loss, loss_mae, loss_mae_a, loss_mae_v, loss_c, mask_a, mask_v, c_acc = audio_model(
+                    a_input, v_input, args.masking_ratio, args.masking_ratio,
+                    mae_loss_weight=args.mae_loss_weight, contrast_loss_weight=args.contrast_loss_weight,
+                    mask_mode=args.mask_mode
+                )
+                loss, loss_mae, loss_mae_a, loss_mae_v, loss_c, c_acc = loss.sum(), loss_mae.sum(), loss_mae_a.sum(), loss_mae_v.sum(), loss_c.sum(), c_acc.mean()
+            A_loss.append(loss.detach().item())
+            A_loss_mae.append(loss_mae.detach().item())
+            A_loss_mae_a.append(loss_mae_a.detach().item())
+            A_loss_mae_v.append(loss_mae_v.detach().item())
+            A_loss_c.append(loss_c.detach().item())
+            A_c_acc.append(c_acc.detach().item())
+            end = time.time()
+
+        loss = torch.mean(torch.tensor(A_loss))
+        loss_mae = torch.mean(torch.tensor(A_loss_mae))
+        loss_mae_a = torch.mean(torch.tensor(A_loss_mae_a))
+        loss_mae_v = torch.mean(torch.tensor(A_loss_mae_v))
+        loss_c = torch.mean(torch.tensor(A_loss_c))
+        c_acc = torch.mean(torch.tensor(A_c_acc))
+
+    eval_loss_av = loss.item()
+    eval_loss_mae = loss_mae.item()
+    eval_loss_mae_a = loss_mae_a.item()
+    eval_loss_mae_v = loss_mae_v.item()
+    eval_loss_c = loss_c.item()
+    eval_c_acc = c_acc.item()
+
+    val_metrics = {
+            "val/eval_loss_av": eval_loss_av,
+            "val/eval_loss_mae": eval_loss_mae,
+            "val/eval_loss_mae_a": eval_loss_mae_a,
+            "val/eval_loss_mae_v": eval_loss_mae_v,
+            "val/eval_loss_c": eval_loss_c,
+            "val/eval_c_acc": eval_c_acc,
+    }
+        
+    wandb.log(val_metrics)
+
+    print("Eval Audio MAE Loss: {:.6f}".format(eval_loss_mae_a))
+    print("Eval Visual MAE Loss: {:.6f}".format(eval_loss_mae_v))
+    print("Eval Total MAE Loss: {:.6f}".format(eval_loss_mae))
+    print("Eval Contrastive Loss: {:.6f}".format(eval_loss_c))
+    print("Eval Total Loss: {:.6f}".format(eval_loss_av))
+    print("Eval Contrastive Accuracy: {:.6f}".format(eval_c_acc))
+
+    print(f'Train Audio MAE Loss: {metrics_loggers["loss_a_meter"].avg:.6f}')
+    print(f'Train Visual MAE Loss: {metrics_loggers["loss_v_meter"].avg:.6f}')
+    print(f'Train Contrastive Loss: {metrics_loggers["loss_c_meter"].avg:.6f}')
+    print(f'Train Total Loss: {metrics_loggers["loss_av_meter"].avg:.6f}')
+
+    return eval_loss_av, eval_loss_mae, eval_loss_mae_a, eval_loss_mae_v, eval_loss_c, eval_c_acc
 
 
 def train(audio_model, train_loader, test_loader, args):
@@ -26,37 +241,22 @@ def train(audio_model, train_loader, test_loader, args):
     print('running on ' + str(device))
     torch.set_grad_enabled(True)
 
-    batch_time, per_sample_time, data_time, per_sample_data_time, per_sample_dnn_time = AverageMeter(), AverageMeter(), AverageMeter(), AverageMeter(), AverageMeter()
-    loss_av_meter, loss_a_meter, loss_v_meter, loss_c_meter = AverageMeter(), AverageMeter(), AverageMeter(), AverageMeter()
+    metrics_loggers = create_metrics_loggers()
+
     progress = []
 
     best_epoch, best_loss = 0, np.inf
-    global_step, epoch = 0, 0
+    epoch = 0
     start_time = time.time()
     exp_dir = args.exp_dir
 
     def _save_progress():
-        progress.append([epoch, global_step, best_epoch, best_loss,
+        progress.append([epoch, best_epoch, best_loss,
                 time.time() - start_time])
         with open("%s/progress.pkl" % exp_dir, "wb") as f:
             pickle.dump(progress, f)
 
-    if not isinstance(audio_model, nn.DataParallel):
-        audio_model = nn.DataParallel(audio_model)
-
-    audio_model = audio_model.to(device)
-    trainables = [p for p in audio_model.parameters() if p.requires_grad]
-    print('Total parameter number is : {:.3f} million'.format(sum(p.numel() for p in audio_model.parameters()) / 1e6))
-    print('Total trainable parameter number is : {:.3f} million'.format(sum(p.numel() for p in trainables) / 1e6))
-    optimizer = torch.optim.Adam(trainables, args.lr, weight_decay=5e-7, betas=(0.95, 0.999))
-
-    # use adapt learning rate scheduler, for preliminary experiments only, should not use for formal experiments
-    if args.lr_adapt == True:
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=args.lr_patience, verbose=True)
-        print('Override to use adaptive learning rate scheduler.')
-    else:
-        scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, list(range(args.lrscheduler_start, 1000, args.lrscheduler_step)),gamma=args.lrscheduler_decay)
-        print('The learning rate scheduler starts at {:d} epoch with decay rate of {:.3f} every {:d} epoches'.format(args.lrscheduler_start, args.lrscheduler_decay, args.lrscheduler_step))
+    audio_model, optimizer, scheduler = initialize_model(audio_model, device, args)    
 
     print('now training with {:s}, learning rate scheduler: {:s}'.format(str(args.dataset), str(scheduler)))
 
@@ -66,89 +266,28 @@ def train(audio_model, train_loader, test_loader, args):
     epoch += 1
     scaler = GradScaler()
 
-    print("current #steps=%s, #epochs=%s" % (global_step, epoch))
     print("start training...")
     result = np.zeros([args.n_epochs, 10])  # for each epoch, 10 metrics to record
-    audio_model.train()
     while epoch < args.n_epochs + 1:
         begin_time = time.time()
         end_time = time.time()
         audio_model.train()
         print('---------------')
         print(datetime.datetime.now())
-        print("current #epochs=%s, #steps=%s" % (epoch, global_step))
+        print(f"current #epochs={epoch}")
         print('current masking ratio is {:.3f} for both modalities; audio mask mode {:s}'.format(args.masking_ratio, args.mask_mode))
+
+        train_epoch_result = train_epoch(epoch, audio_model, train_loader, optimizer, scaler, device, args, metrics_loggers)
+
+        if not train_epoch_result:
+            return
         
-        for i, (a_input, v_input, _) in enumerate(tqdm(train_loader, desc="Training Progress")):
-
-            B = a_input.size(0)
-            a_input = a_input.to(device, non_blocking=True)
-            v_input = v_input.to(device, non_blocking=True)
-
-            data_time.update(time.time() - end_time)
-            per_sample_data_time.update((time.time() - end_time) / a_input.shape[0])
-            dnn_start_time = time.time()
-
-            with autocast():
-                loss, loss_mae, loss_mae_a, loss_mae_v, loss_c, mask_a, mask_v, c_acc = audio_model(a_input, v_input, args.masking_ratio, args.masking_ratio, mae_loss_weight=args.mae_loss_weight, contrast_loss_weight=args.contrast_loss_weight, mask_mode=args.mask_mode)
-                # this is due to for torch.nn.DataParallel, the output loss of 4 gpus won't be automatically averaged, need to be done manually
-                loss, loss_mae, loss_mae_a, loss_mae_v, loss_c, c_acc = loss.sum(), loss_mae.sum(), loss_mae_a.sum(), loss_mae_v.sum(), loss_c.sum(), c_acc.mean()
-
-            optimizer.zero_grad()
-            scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
-
-            # loss_av is the main loss
-            loss_av_meter.update(loss.item(), B)
-            loss_a_meter.update(loss_mae_a.item(), B)
-            loss_v_meter.update(loss_mae_v.item(), B)
-            loss_c_meter.update(loss_c.item(), B)
-            batch_time.update(time.time() - end_time)
-            per_sample_time.update((time.time() - end_time)/a_input.shape[0])
-            per_sample_dnn_time.update((time.time() - dnn_start_time)/a_input.shape[0])
-
-            print_step = global_step % args.n_print_steps == 0
-            early_print_step = epoch == 0 and global_step % (args.n_print_steps/10) == 0
-            print_step = print_step or early_print_step
-
-            if print_step and global_step != 0:
-                print('Epoch: [{0}][{1}/{2}]\t'
-                  'Per Sample Total Time {per_sample_time.avg:.5f}\t'
-                  'Per Sample Data Time {per_sample_data_time.avg:.5f}\t'
-                  'Per Sample DNN Time {per_sample_dnn_time.avg:.5f}\t'
-                  'Train Total Loss {loss_av_meter.val:.4f}\t'
-                  'Train MAE Loss Audio {loss_a_meter.val:.4f}\t'
-                  'Train MAE Loss Visual {loss_v_meter.val:.4f}\t'
-                  'Train Contrastive Loss {loss_c_meter.val:.4f}\t'
-                  'Train Contrastive Acc {c_acc:.3f}\t'.format(
-                   epoch, i, len(train_loader), per_sample_time=per_sample_time, per_sample_data_time=per_sample_data_time,
-                      per_sample_dnn_time=per_sample_dnn_time, loss_av_meter=loss_av_meter, loss_a_meter=loss_a_meter, loss_v_meter=loss_v_meter, loss_c_meter=loss_c_meter, c_acc=c_acc), flush=True)
-                if np.isnan(loss_av_meter.avg):
-                    print("training diverged...")
-                    return
-
-            end_time = time.time()
-            global_step += 1
-
         print('start validation')
-        eval_loss_av, eval_loss_mae, eval_loss_mae_a, eval_loss_mae_v, eval_loss_c, eval_c_acc = validate(audio_model, test_loader, args)
-
-        print("Eval Audio MAE Loss: {:.6f}".format(eval_loss_mae_a))
-        print("Eval Visual MAE Loss: {:.6f}".format(eval_loss_mae_v))
-        print("Eval Total MAE Loss: {:.6f}".format(eval_loss_mae))
-        print("Eval Contrastive Loss: {:.6f}".format(eval_loss_c))
-        print("Eval Total Loss: {:.6f}".format(eval_loss_av))
-        print("Eval Contrastive Accuracy: {:.6f}".format(eval_c_acc))
-
-        print("Train Audio MAE Loss: {:.6f}".format(loss_a_meter.avg))
-        print("Train Visual MAE Loss: {:.6f}".format(loss_v_meter.avg))
-        print("Train Contrastive Loss: {:.6f}".format(loss_c_meter.avg))
-        print("Train Total Loss: {:.6f}".format(loss_av_meter.avg))
+        eval_loss_av, eval_loss_mae, eval_loss_mae_a, eval_loss_mae_v, eval_loss_c, eval_c_acc = validate(device, audio_model, test_loader, metrics_loggers, args)
 
         # train audio mae loss, train visual mae loss, train contrastive loss, train total loss
         # eval audio mae loss, eval visual mae loss, eval contrastive loss, eval total loss, eval contrastive accuracy, lr
-        result[epoch-1, :] = [loss_a_meter.avg, loss_v_meter.avg, loss_c_meter.avg, loss_av_meter.avg, eval_loss_mae_a, eval_loss_mae_v, eval_loss_c, eval_loss_av, eval_c_acc, optimizer.param_groups[0]['lr']]
+        result[epoch-1, :] = [metrics_loggers["loss_a_meter"].avg, metrics_loggers["loss_v_meter"].avg, metrics_loggers["loss_c_meter"].avg, metrics_loggers["loss_av_meter"].avg, eval_loss_mae_a, eval_loss_mae_v, eval_loss_c, eval_loss_av, eval_c_acc, optimizer.param_groups[0]['lr']]
         np.savetxt(exp_dir + '/result.csv', result, delimiter=',')
         print('validation finished')
 
@@ -177,47 +316,4 @@ def train(audio_model, train_loader, test_loader, args):
 
         epoch += 1
 
-        batch_time.reset()
-        per_sample_time.reset()
-        data_time.reset()
-        per_sample_data_time.reset()
-        per_sample_dnn_time.reset()
-        loss_av_meter.reset()
-        loss_a_meter.reset()
-        loss_v_meter.reset()
-        loss_c_meter.reset()
-
-def validate(audio_model, val_loader, args):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    batch_time = AverageMeter()
-    if not isinstance(audio_model, nn.DataParallel):
-        audio_model = nn.DataParallel(audio_model)
-    audio_model = audio_model.to(device)
-    audio_model.eval()
-
-    end = time.time()
-    A_loss, A_loss_mae, A_loss_mae_a, A_loss_mae_v, A_loss_c, A_c_acc = [], [], [], [], [], []
-    with torch.no_grad():
-        for i, (a_input, v_input, _) in enumerate(val_loader):
-            a_input = a_input.to(device)
-            v_input = v_input.to(device)
-            with autocast():
-                loss, loss_mae, loss_mae_a, loss_mae_v, loss_c, mask_a, mask_v, c_acc = audio_model(a_input, v_input, args.masking_ratio, args.masking_ratio, mae_loss_weight=args.mae_loss_weight, contrast_loss_weight=args.contrast_loss_weight, mask_mode=args.mask_mode)
-                loss, loss_mae, loss_mae_a, loss_mae_v, loss_c, c_acc = loss.sum(), loss_mae.sum(), loss_mae_a.sum(), loss_mae_v.sum(), loss_c.sum(), c_acc.mean()
-            A_loss.append(loss.to('cpu').detach())
-            A_loss_mae.append(loss_mae.to('cpu').detach())
-            A_loss_mae_a.append(loss_mae_a.to('cpu').detach())
-            A_loss_mae_v.append(loss_mae_v.to('cpu').detach())
-            A_loss_c.append(loss_c.to('cpu').detach())
-            A_c_acc.append(c_acc.to('cpu').detach())
-            batch_time.update(time.time() - end)
-            end = time.time()
-
-        loss = np.mean(A_loss)
-        loss_mae = np.mean(A_loss_mae)
-        loss_mae_a = np.mean(A_loss_mae_a)
-        loss_mae_v = np.mean(A_loss_mae_v)
-        loss_c = np.mean(A_loss_c)
-        c_acc = np.mean(A_c_acc)
-
-    return loss, loss_mae, loss_mae_a, loss_mae_v, loss_c, c_acc
+        reset_metric_loggers(metrics_loggers)

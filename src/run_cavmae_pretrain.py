@@ -20,6 +20,8 @@ import dataloader as dataloader
 import models
 import numpy as np
 from traintest_cavmae import train
+import wandb
+from types import SimpleNamespace
 
 # pretrain cav-mae model
 
@@ -52,7 +54,7 @@ parser.add_argument('--warmup', help='if use warmup learning rate scheduler', ty
 parser.add_argument("--lrscheduler_start", default=10, type=int, help="when to start decay in finetuning")
 parser.add_argument("--lrscheduler_step", default=5, type=int, help="the number of step to decrease the learning rate in finetuning")
 parser.add_argument("--lrscheduler_decay", default=0.5, type=float, help="the learning rate decay ratio in finetuning")
-parser.add_argument("--n-print-steps", type=int, default=100, help="number of steps to print statistics")
+parser.add_argument("--n-print-steps", type=int, default=1000, help="number of steps to print statistics")
 parser.add_argument('--save_model', help='save the model or not', type=ast.literal_eval)
 
 parser.add_argument("--mixup", type=float, default=0, help="how many (0-1) samples need to be mixup during training")
@@ -76,7 +78,21 @@ audio_conf = {'num_mel_bins': 128, 'target_length': args.target_length, 'freqm':
 val_audio_conf = {'num_mel_bins': 128, 'target_length': args.target_length, 'freqm': 0, 'timem': 0, 'mixup': 0, 'dataset': args.dataset,
                   'mode':'eval', 'mean': args.dataset_mean, 'std': args.dataset_std, 'noise': False, 'im_res': im_res}
 
+wandb.login(anonymous="allow")
+
+# Let's define a config object to store our hyperparameters
+config = SimpleNamespace(
+    args = args,
+    audio_conf = audio_conf,
+    val_audio_conf = val_audio_conf,
+)
+
 print('current mae loss {:.3f}, and contrastive loss {:.3f}'.format(args.mae_loss_weight, args.contrast_loss_weight))
+
+wandb.init(
+    project="cav_mae",
+    config=config,
+    )
 
 if args.bal == 'bal':
     print('balanced sampler is being used')
@@ -139,3 +155,4 @@ with open(args.exp_dir + '/args.json', 'w') as f:
 
 print('Now starting training for {:d} epochs.'.format(args.n_epochs))
 train(audio_model, train_loader, val_loader, args)
+wandb.finish()

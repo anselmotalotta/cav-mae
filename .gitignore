@@ -10,10 +10,14 @@
 venv/*
 venv
 __pycache__/
+exp/
+wandb/
 *.pt
 *.ckpt
 *.json
 *.bin
+*.log
+*.out
 pretrained_model/*
 !pretrained_model/README.md
 src/dataloader_old.py
