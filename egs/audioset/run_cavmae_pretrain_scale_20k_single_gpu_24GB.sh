@@ -31,7 +31,7 @@ pretrain_path=${cur_dir}/IN-initial.pth
 
 bal=None # balanced sampling, should be false for pretraining
 lr=2e-4
-epoch=3
+epoch=180
 lrscheduler_start=10
 lrscheduler_decay=0.5
 lrscheduler_step=5
@@ -40,8 +40,8 @@ dataset_std=4.4849
 target_length=1024
 noise=True
 mixup=0.0
-batch_size=16
-lr_adapt=False
+batch_size=24
+lr_adapt=True
 
 dataset=audioset
 
