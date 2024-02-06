@@ -26,22 +26,22 @@ def calculate_stats(output, target):
     acc = metrics.accuracy_score(np.argmax(target, 1), np.argmax(output, 1))
 
     # Class-wise statistics
-    for k in range(classes_num):
+    for class_id in range(classes_num):
 
         # Average precision
         avg_precision = metrics.average_precision_score(
-            target[:, k], output[:, k], average=None)
+            target[:, class_id], output[:, class_id], average=None)
 
         # AUC
         try:
-            auc = metrics.roc_auc_score(target[:, k], output[:, k], average=None)
+            auc = metrics.roc_auc_score(target[:, class_id], output[:, class_id], average=None)
 
             # Precisions, recalls
             (precisions, recalls, thresholds) = metrics.precision_recall_curve(
-                target[:, k], output[:, k])
+                target[:, class_id], output[:, class_id])
 
             # FPR, TPR
-            (fpr, tpr, thresholds) = metrics.roc_curve(target[:, k], output[:, k])
+            (fpr, tpr, thresholds) = metrics.roc_curve(target[:, class_id], output[:, class_id])
 
             save_every_steps = 1000     # Sample statistics to reduce size
             dict = {'precisions': precisions[0::save_every_steps],
@@ -53,17 +53,18 @@ def calculate_stats(output, target):
                     # note acc is not class-wise, this is just to keep consistent with other metrics
                     'acc': acc
                     }
-        except:
+        except Exception as e:
             dict = {'precisions': -1,
-                    'recalls': -1,
-                    'AP': avg_precision,
-                    'fpr': -1,
-                    'fnr': -1,
-                    'auc': -1,
-                    # note acc is not class-wise, this is just to keep consistent with other metrics
-                    'acc': acc
-                    }
-            print('class {:s} no true sample'.format(str(k)))
+                'recalls': -1,
+                'AP': avg_precision,
+                'fpr': -1,
+                'fnr': -1,
+                'auc': -1,
+                # note acc is not class-wise, this is just to keep consistent with other metrics
+                'acc': acc
+                }
+            # print(f'class {str(class_id)} no true sample', e)
+
         stats.append(dict)
 
     return stats

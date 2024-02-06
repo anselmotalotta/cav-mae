@@ -349,12 +349,13 @@ class AudiosetDataset(Dataset):
         Processes the label string into a tensor of label indices.
         Handles both single-label processing and mixup label processing.
         """
+        # print(f"labels received: {labels_string}, mix_labels received: {mix_labels_string}, mix_lambda: {mix_lambda}")
         label_indices = np.zeros(self.label_num) + (self.label_smooth / self.label_num)
 
         confidence_weight = 1.0 - self.label_smooth
         
         for label_str in labels_string.split(','):
-            label_str = label_str.strip()
+            label_str = label_str.strip().replace('"', '')
             if label_str in self.index_dict:
                 label_index = int(self.index_dict[label_str])
                 label_indices[label_index] += mix_lambda * confidence_weight 
@@ -362,6 +363,7 @@ class AudiosetDataset(Dataset):
         # Handling mixup case
         if mix_labels_string is not None:
             for mix_label_str in mix_labels_string.split(','):
+                mix_label_str = label_str.strip().replace('"', '')
                 mix_label_str = mix_label_str.strip()
                 if mix_label_str in self.index_dict:
                     mix_label_index = int(self.index_dict[mix_label_str])
