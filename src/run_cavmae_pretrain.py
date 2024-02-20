@@ -123,6 +123,9 @@ if args.data_eval != None:
 if args.model == 'cav-mae':
     print('pretrain a cav-mae model with 11 modality-specific layers and 1 modality-sharing layers')
     audio_model = models.CAVMAE(audio_length=args.target_length, norm_pix_loss=args.norm_pix_loss, modality_specific_depth=11, tr_pos=args.tr_pos)
+elif args.model == 'cam-mae':
+    print('pretrain a cam-mae model with 11 modality-specific layers and 1 modality-sharing layers')
+    audio_model = models.CAMMAE(audio_length=args.target_length, norm_pix_loss=args.norm_pix_loss, modality_specific_depth=11, tr_pos=args.tr_pos)
 else:
     raise ValueError('model not supported')
 

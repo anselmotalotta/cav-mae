@@ -18,7 +18,7 @@ model=cav-mae-ft
 ftmode=multimodal # or audioonly or videoonly
 
 model_folder=/storage/models/cavmae
-model_version=as-full-51.2
+model_version=as-full-51.2 #as-20k-42.0
 data_folder=/storage/data/cavmae
 
 # you can replace with any checkpoint you want, but by default, we use cav-mae-scale++
@@ -46,7 +46,7 @@ label_smooth=0.1
 dataset=audioset
 
 data_folder=/storage/data/cavmae
-te_data=${data_folder}/audioset/audioset_eval_partial_custom.json
+te_data=${data_folder}/audioset/audioset_eval_custom.json
 label_csv=${data_folder}/audioset/class_labels_indices.csv
 
 exp_dir=./exp/eval-${model}-version-${model_version}-${ftmode}-bs${batch_size}-r3

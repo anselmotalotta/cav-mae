@@ -16,7 +16,7 @@ set -x
 source /data/sls/scratch/yuangong/avbyol/venv-a5/bin/activate
 export TORCH_HOME=../../pretrained_models
 
-model=cav-mae
+model=cam-mae
 masking_ratio=0.75
 mask_mode=unstructured # or time, or freq, or tf
 contrast_loss_weight=0.01
@@ -31,7 +31,7 @@ pretrain_path=${cur_dir}/IN-initial.pth
 
 bal=None # balanced sampling, should be false for pretraining
 lr=2e-4
-epoch=180
+epoch=1
 lrscheduler_start=10
 lrscheduler_decay=0.5
 lrscheduler_step=5
